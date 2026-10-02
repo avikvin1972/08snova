@@ -43,6 +43,16 @@ label{display:block;margin-top:7px}
 .metric b{display:block;font-size:1.05rem}
 .note{font-size:.88rem}
 #lv{transition:width .08s}
+.dual{position:relative;height:34px;margin:6px 0}
+.dual input[type=range]{position:absolute;left:0;top:0;width:100%;height:34px;margin:0;padding:0;background:none;border:0;pointer-events:none;-webkit-appearance:none;appearance:none}
+.dual input[type=range]::-webkit-slider-runnable-track{background:transparent;height:34px}
+.dual input[type=range]::-moz-range-track{background:transparent}
+.dual input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;width:22px;height:22px;margin-top:6px;border-radius:50%;background:var(--acc);border:2px solid var(--card);box-shadow:0 0 0 1px var(--acc)}
+.dual input[type=range]::-moz-range-thumb{pointer-events:auto;width:18px;height:18px;border-radius:50%;background:var(--acc);border:2px solid var(--card)}
+.dtrack{position:absolute;left:11px;right:11px;top:15px;height:4px;border-radius:2px;background:var(--line)}
+.dfill{position:absolute;top:15px;height:4px;background:var(--acc)}
+.nums{display:flex;justify-content:space-between;gap:8px}
+.nums input{width:104px;font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
 @media(max-width:520px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -84,11 +94,15 @@ label{display:block;margin-top:7px}
 </div>
 
 <div id="ws" hidden class="card">
-<canvas id="cw" width="720" height="150"></canvas>
-<label>Начало<input id="ra" type="range" min="0" max="100" value="0"></label>
-<label>Конец<input id="rb" type="range" min="0" max="100" value="100"></label>
+<canvas id="cw" width="720" height="200"></canvas>
+<div class="dual"><div class="dtrack"></div><div class="dfill" id="dfill"></div>
+<input id="ra" type="range" min="0" max="100" step="any" value="0" aria-label="Начало выделения">
+<input id="rb" type="range" min="0" max="100" step="any" value="100" aria-label="Конец выделения"></div>
+<div class="nums"><label>Начало, ms<br><input id="raNum" type="number" inputmode="decimal" step="0.1" min="0" value="0"></label>
+<label style="text-align:right">Конец, ms<br><input id="rbNum" type="number" inputmode="decimal" step="0.1" min="0" value="0"></label></div>
 <button id="pl">Прослушать фрагмент</button>
 
+<div id="am"><span class="m">Анализ:</span> <button id="amA" class="on">Вся запись</button><button id="amF">Фрагмент</button></div>
 <div id="tabs"></div>
 <div id="fr"><span class="m">Предел, кГц:</span> </div>
 <canvas id="cg" width="720" height="390"></canvas>
@@ -137,13 +151,14 @@ const $=id=>document.getElementById(id);
 const rcNum=$('rcNum'), rcRange=$('rc');
 function fileDurationMs(){return S?S.d.length/S.sr*1000:0}
 function setAnalysisTimeMs(v){
- const max=fileDurationMs(); v=Number.isFinite(v)?v:0; v=Math.max(0,Math.min(max,v));
- rcRange.max=Math.max(0,max); rcRange.value=v; rcNum.value=v.toFixed(1); $('rcv').textContent=v.toFixed(1)+' ms'; updateRangeScale();
+ const max=fileDurationMs(),fr=anaMode==='frag'&&S,lo=fr?+$('ra').value:0,hi=fr?+$('rb').value:max;
+ v=Number.isFinite(v)?v:lo;v=Math.max(lo,Math.min(hi,v));
+ rcRange.min=lo;rcRange.max=Math.max(lo,hi);rcRange.value=v;rcNum.min=lo;rcNum.value=v.toFixed(1);$('rcv').textContent=v.toFixed(1)+' ms';updateRangeScale();
 }
 function updateRangeScale(){
- const el=$('rangeScale'); if(!el)return; const max=fileDurationMs();
- if(!max){el.innerHTML='<span>0 ms</span>';return}
- el.innerHTML=[0,.25,.5,.75,1].map(p=>'<span>'+Math.round(p*max)+' ms</span>').join('');
+ const el=$('rangeScale');if(!el)return;const lo=+rcRange.min||0,hi=+rcRange.max||0;
+ if(!S||!hi){el.innerHTML='<span>0 ms</span>';return}
+ el.innerHTML=[0,.25,.5,.75,1].map(p=>'<span>'+Math.round(lo+p*(hi-lo))+' ms</span>').join('');
 }
 rcRange.addEventListener('input',()=>{setAnalysisTimeMs(Number(rcRange.value));redraw()});
 rcNum.addEventListener('change',()=>{setAnalysisTimeMs(parseFloat(String(rcNum.value).replace(',','.')));drawWave();draw()});
@@ -151,10 +166,8 @@ const AC=window.AudioContext||window.webkitAudioContext;
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 let ctx=null,S=null,R=null,tab=0,cmp=false,rec=null,recTimer=null,raf=0,an=null,gnode=null,drawTimer=0;
-let FMAX=8000;
+let FMAX=8000,anaMode='all';
 let viewMode='wave';
-let spectrumWindowMs=128;
-let spectrogramWindowMs=128;
 
 const SND='i ɪ ɛ æ ɑ ɔ ʊ u ʌ ə ɝ ɚ ɨ eɪ aɪ ɔɪ oʊ aʊ ɪr ɛr ɑr ɔr oʊr ʊr p b t d k g tʃ dʒ f v θ ð s z ʃ ʒ h m n ŋ l r j w ʍ x'.split(' ')
  .concat(['слово A','слово B','слово C']);
@@ -166,8 +179,9 @@ const MODES=[
  ['Форма','wave'],
  ['Спектр 128','spec128'],
  ['Спектр 32','spec32'],
- ['Спектрограмма 128','sg128'],
  ['Спектрограмма 32','sg32'],
+ ['Спектрограмма 16','sg16'],
+ ['Спектрограмма 8','sg8'],
  ['F0 (основной тон)','f0'],
  ['Громкость','loud']
 ];
@@ -176,13 +190,10 @@ MODES.forEach(([t,m],i)=>{
  b.onclick=()=>{
   viewMode=m;
   [...$('tabs').children].forEach(c=>c.classList.toggle('on',c===b));
-  const isSpec=m==='spec128'||m==='spec32'||m==='sg128'||m==='sg32';
+  const isSpec=m.startsWith('spec')||m.startsWith('sg');
   $('lc').hidden=!isSpec;
   $('formantBox').hidden=!(m==='spec128'||m==='spec32');
-  if(m==='spec128')spectrumWindowMs=128;
-  if(m==='spec32')spectrumWindowMs=32;
-  if(m==='sg128')spectrogramWindowMs=128;
-  if(m==='sg32')spectrogramWindowMs=32;
+  updateFr();
   if(S){drawWave();draw();}
  };
  $('tabs').appendChild(b);
@@ -314,7 +325,7 @@ $('tt').onclick=()=>play(
 $('df').onclick=async()=>{Object.assign(cfg,DEF);ui();await meter();$('ss').textContent='Настройки сброшены.\n'+$('ss').textContent};
 
 function show(d,sr,fileName=''){
- S={d,sr};$('ws').hidden=false;$('ra').value=0;$('rb').value=100;
+ S={d,sr};$('ws').hidden=false;setSel(0,fileDurationMs());updateFr();
  $('st').textContent=(fileName?'Файл: '+fileName+' | ':'')+'Длина '+(d.length/sr).toFixed(2)+' с. Выделите нужный фрагмент.';
  setAnalysisTimeMs(0);
  drawWave();draw();chk();
@@ -334,11 +345,38 @@ async function load(buf,fileName=''){
  show(d,ab.sampleRate,fileName);
 }
 
-function seg(){
- const n=S.d.length,A=+$('ra').value/100;
- const B=Math.min(1,Math.max(+$('rb').value/100,A+.005));
- return S.d.subarray(Math.floor(n*A),Math.floor(n*B));
+const MINGAP=1;
+function selGet(){return [+$('ra').value,+$('rb').value]}
+function curLim(){return anaMode==='frag'?selGet():null}
+function seg(){const [a,b]=selGet();return S.d.subarray(Math.floor(a*S.sr/1000),Math.floor(b*S.sr/1000))}
+function anaSeg(){return anaMode==='frag'?seg():S.d}
+function anaT0(){return anaMode==='frag'?selGet()[0]/1000:0}
+function isSpecView(){return viewMode.startsWith('spec')||viewMode.startsWith('sg')}
+function updateDual(){
+ const max=fileDurationMs()||1,fa=+$('ra').value/max,fb=+$('rb').value/max,f=$('dfill');
+ f.style.left='calc(11px + (100% - 22px)*'+fa+')';f.style.width='calc((100% - 22px)*'+(fb-fa)+')';
+ $('ra').style.zIndex=fa>.5?3:1;$('rb').style.zIndex=2;
 }
+function setSel(a,b,who){
+ const max=fileDurationMs(),g=Math.min(MINGAP,max/2);
+ a=Number.isFinite(a)?a:0;b=Number.isFinite(b)?b:max;
+ if(who==='b'){b=Math.max(g,Math.min(max,b));a=Math.min(Math.max(0,a),b-g)}
+ else{a=Math.max(0,Math.min(max-g,a));b=Math.min(max,Math.max(b,a+g))}
+ const ra=$('ra'),rb=$('rb');ra.max=max;rb.max=max;ra.value=a;rb.value=b;
+ $('raNum').value=a.toFixed(1);$('rbNum').value=b.toFixed(1);
+ updateDual();if(S)setAnalysisTimeMs(+rcRange.value);
+}
+function updateFr(){
+ const nyq=S?S.sr/2:24000;let best=8;const bs=[...$('fr').querySelectorAll('button')];
+ bs.forEach(b=>{const k=+b.textContent,ok=k===8||k*1000<=nyq+1;b.disabled=!ok;b.title=ok?'':'у этой записи до '+(nyq/1000).toFixed(1).replace('.',',')+' кГц';if(ok)best=k});
+ if(FMAX/1000>best){FMAX=best*1000;bs.forEach(b=>b.classList.toggle('on',+b.textContent===best))}
+ $('fr').hidden=!isSpecView();
+}
+function setAna(m){
+ anaMode=m;$('amA').classList.toggle('on',m==='all');$('amF').classList.toggle('on',m==='frag');
+ if(!S)return;const [a,b]=selGet();setAnalysisTimeMs(m==='frag'?(a+b)/2:+rcRange.value);drawWave();draw();
+}
+$('amA').onclick=()=>setAna('all');$('amF').onclick=()=>setAna('frag');
 $('pl').onclick=()=>play(seg(),S.sr);
 
 let dbp=null;
@@ -544,21 +582,32 @@ function bars(g,x,W,H,col,a){
 }
 function drawWave(){
  const cv=$('cw'),g=cv.getContext('2d'),W=cv.width,H=cv.height;g.clearRect(0,0,W,H);bars(g,S.d,W,H,css('--acc'),.9);
- const A=+$('ra').value/100,B=Math.max(+$('rb').value/100,A+.005);g.fillStyle=css('--ref');g.globalAlpha=.25;g.fillRect(A*W,0,(B-A)*W,H);g.globalAlpha=1;
- const isSpec=viewMode.startsWith('spec')||viewMode.startsWith('sg');
- if(isSpec){const t=Number($('rc').value)/1000,c=Math.max(0,Math.min(S.d.length-1,Math.round(t*S.sr)));g.fillStyle=css('--fg');g.fillRect(c/S.d.length*W-1,0,3,H)}
+ const dur=fileDurationMs()||1,[sa,sb]=selGet(),X=t=>t/dur*W;
+ g.fillStyle=css('--ref');g.globalAlpha=.25;g.fillRect(X(sa),0,X(sb)-X(sa),H);g.globalAlpha=1;g.fillRect(X(sa)-1,0,2,H);g.fillRect(X(sb)-1,0,2,H);
+ if(isSpecView()){
+  const t=+$('rc').value,act=viewMode==='spec128'?128:viewMode==='spec32'?32:0;
+  if(!viewMode.startsWith('sg'))[128,32].forEach((w,k)=>{const f=analysisFrame(S.d,S.sr,t,w,curLim()),y=k?H*.56:H*.06,h=H*.38;g.globalAlpha=(!act||act===w)?.4:.15;g.fillStyle=css(k?'--ok':'--fg');g.fillRect(X(f.start),y,Math.max(1,X(f.end)-X(f.start)),h);g.globalAlpha=1;g.fillStyle=css('--fg');g.font='12px system-ui';g.fillText(String(w),Math.min(W-26,X(f.start)+3),y+14)});
+  g.fillStyle=css('--fg');g.fillRect(X(t)-1,0,3,H);
+ }
 }
-function plot(g,W,H,v,y0,y1,col,lw,al){
- g.strokeStyle=col;g.lineWidth=lw;g.globalAlpha=al;g.beginPath();let up=false,n=Math.max(1,v.length-1);for(let i=0;i<v.length;i++){const u=v[i];if(u==null||!Number.isFinite(u)){up=false;continue}const X=i/n*W,Y=H-(u-y0)/(y1-y0)*H;up?g.lineTo(X,Y):g.moveTo(X,Y);up=true}g.stroke();g.globalAlpha=1;
+function plot(g,W,H,v,y0,y1,col,lw,al,xa=0,xb=1){
+ g.strokeStyle=col;g.lineWidth=lw;g.globalAlpha=al;g.beginPath();let up=false,n=Math.max(1,v.length-1);for(let i=0;i<v.length;i++){const u=v[i];if(u==null||!Number.isFinite(u)){up=false;continue}const X=(xa+i/n*(xb-xa))*W,Y=H-(u-y0)/(y1-y0)*H;up?g.lineTo(X,Y):g.moveTo(X,Y);up=true}g.stroke();g.globalAlpha=1;
 }
-function tstep(d){return d<=.6?.1:d<=1.2?.2:d<=3?.5:d<=6?1:2}
-function otick(g,W,H,d){const st=tstep(d);g.save();g.fillStyle=css('--fg');g.textAlign='left';for(let t=0;t<=d;t+=st){const X=d? t/d*W:0;g.globalAlpha=.2;g.fillRect(X,0,1,H);g.globalAlpha=1;g.fillText(String(Math.round(t*10)/10).replace('.',','),Math.min(W-25,X+4),H-8)}g.restore()}
-function analysisFrame(data,sr,centerMs,windowMs){
- const requested=Math.max(16,Math.round(windowMs*sr/1000));let center=Math.round(centerMs*sr/1000),a=center-Math.floor(requested/2),b=a+requested;
- if(a<0){b=Math.min(data.length,b-a);a=0} if(b>data.length){a=Math.max(0,a-(b-data.length));b=data.length}
+function tstep(d){return d<=.3?.05:d<=.6?.1:d<=1.2?.2:d<=3?.5:d<=6?1:2}
+function otick(g,W,H,d,t0=0){
+ const st=tstep(d);g.save();g.fillStyle=css('--fg');g.textAlign='left';
+ for(let t=Math.ceil(t0/st-1e-9)*st;t<=t0+d+1e-9;t+=st){const X=d?(t-t0)/d*W:0;g.globalAlpha=.2;g.fillRect(X,0,1,H);g.globalAlpha=1;g.fillText(String(Math.round(t*1000)),Math.min(W-30,X+4),H-8)}
+ g.restore();
+}
+function analysisFrame(data,sr,centerMs,windowMs,lim){
+ const L0=lim?Math.max(0,Math.floor(lim[0]*sr/1000)):0,L1=lim?Math.min(data.length,Math.floor(lim[1]*sr/1000)):data.length;
+ const requested=Math.min(Math.max(16,Math.round(windowMs*sr/1000)),Math.max(16,L1-L0));
+ let a=Math.round(centerMs*sr/1000)-Math.floor(requested/2),b=a+requested;
+ if(a<L0){a=L0;b=Math.min(L1,a+requested)}
+ if(b>L1){b=L1;a=Math.max(L0,b-requested)}
  return {x:data.subarray(a,b),start:a/sr*1000,end:b/sr*1000,requested};
 }
-function analyzeAt(data,sr,centerMs,windowMs){const fr=analysisFrame(data,sr,centerMs,windowMs);return {...fr,formants:formants(fr.x,sr),f0:pitchAt(fr.x,sr)};}
+function analyzeAt(data,sr,centerMs,windowMs){const fr=analysisFrame(data,sr,centerMs,windowMs,data===S.d?curLim():null);return {...fr,formants:formants(fr.x,sr),f0:pitchAt(fr.x,sr)};}
 function setMetric(id,v){$(id).textContent=v==null?'—':Math.round(v)+' Гц'}
 function updateFormantMetrics(centerMs){
  const a128=analyzeAt(S.d,S.sr,centerMs,128);
@@ -574,13 +623,14 @@ function drawSpectrumPanel(g,x,sr,W,H,centerMs,windowMs,col){
  g.fillStyle=css('--fg');g.font='15px system-ui';g.fillText('Спектр '+windowMs+' ms',8,20);
  const fs=a.formants||[];fs.forEach((f,i)=>{if(f==null||f>FM)return;const X=f/FM*W;g.fillStyle=col;g.fillRect(X,30,2,H-45);g.fillText('F'+(i+1)+' '+f+' Гц',Math.min(W-90,X+5),48+i*18)});
  g.fillStyle=css('--fg');g.globalAlpha=.7;g.fillText('Окно: '+a.start.toFixed(1)+'–'+a.end.toFixed(1)+' ms',8,H-8);g.globalAlpha=1;
+ if(FM>0){g.fillStyle=css('--fg');g.globalAlpha=.6;g.font='12px system-ui';const ks=FM>9000?2000:1000;for(let k=ks;k<FM;k+=ks){const X=k/FM*W;g.fillRect(X,H-28,1,7);g.fillText(String(k/1000),X-3,H-31)}g.fillText('кГц',W-30,H-31);g.globalAlpha=1;g.font='15px system-ui'}
  return a;
 }
 function sgram(x,sr,windowMs){
  const N=Math.max(128,Math.round(windowMs*sr/1000)),H=Math.max(32,Math.floor(N/4)),F=Math.min(Math.floor(FMAX/(sr/nextPow2(N))),nextPow2(N)/2),out=[];
  if(x.length<N)return {rows:[],F,fftN:nextPow2(N)};
  for(let pos=0;pos+N<=x.length;pos+=H)out.push(magPadded(x.subarray(pos,pos+N),sr,nextPow2(N)).subarray(0,F));
- return {rows:out,F,fftN:nextPow2(N)};
+ return {rows:out,F,fftN:nextPow2(N),N,H};
 }
 function drawSG(g,x,sr,Y,H,windowMs){
  const G=sgram(x,sr,windowMs);g.fillStyle=css('--fg');g.fillText('Спектрограмма '+windowMs+' ms',8,Y+18);
@@ -588,33 +638,41 @@ function drawSG(g,x,sr,Y,H,windowMs){
  const C=G.rows.length,F=G.F;let mx=-Infinity,mn=Infinity;for(const row of G.rows)for(const v of row){mx=Math.max(mx,v);mn=Math.min(mn,v)}
  const o=document.createElement('canvas');o.width=C;o.height=F;const og=o.getContext('2d'),im=og.createImageData(C,F),top=mx,bot=top-70;
  for(let c=0;c<C;c++)for(let f=0;f<F;f++){const v=Math.max(0,Math.min(1,(G.rows[c][f]-bot)/70)),p=((F-1-f)*C+c)*4;im.data[p]=Math.round(255*v);im.data[p+1]=Math.round(255*Math.max(0,(v-.45)*1.8));im.data[p+2]=Math.round(255*(1-v)*.9);im.data[p+3]=255}
- og.putImageData(im,0,0);const ML=58,MR=10,W=720-ML-MR,gW=Math.max(1,W);g.drawImage(o,ML,Y+26,gW,Math.max(20,H-26));
+ og.putImageData(im,0,0);const ML=58,MR=10,W=720-ML-MR,gW=Math.max(1,W);const dur=x.length/sr*1000,tl=(G.N/2-G.H/2)/sr*1000,tw=C*G.H/sr*1000;g.drawImage(o,ML+tl/dur*gW,Y+26,Math.max(1,tw/dur*gW),Math.max(20,H-26));
  g.fillStyle=css('--fg');g.textAlign='right';const maxF=F*(sr/G.fftN),step=maxF<=9000?1000:2000;for(let k=0;k<=maxF;k+=step){const yy=Y+26+(H-26)-k/maxF*(H-26);g.globalAlpha=.3;g.fillRect(ML,yy,gW,1);g.globalAlpha=1;g.fillText((k/1000).toFixed(0),ML-7,Math.min(Y+H,Math.max(Y+38,yy+5)))}g.textAlign='left';
+ const tx=t=>ML+t/dur*gW,[sa,sb]=selGet(),tc=+$('rc').value;
+ g.fillStyle=css('--ref');g.fillRect(tx(sa)-1,Y+26,2,H-26);g.fillRect(tx(sb)-1,Y+26,2,H-26);
+ g.fillStyle=css('--ok');g.fillRect(tx(tc)-1,Y+26,2,H-26);
+ g.fillStyle=css('--fg');g.font='12px system-ui';const st=dur<700?100:dur<1500?200:dur<4000?500:1000;for(let t=0;t<=dur;t+=st)g.fillText(String(t),Math.min(720-30,tx(t)+2),Y+H-4);g.font='16px system-ui';
 }
 function draw(){
  if(!S)return;const cv=$('cg'),g=cv.getContext('2d'),W=cv.width,fg=css('--fg'),C=css('--acc');g.font='16px system-ui';g.fillStyle=fg;
- const mode=viewMode;const isSpec=mode==='spec128'||mode==='spec32'||mode==='sg128'||mode==='sg32';$('formantBox').hidden=!(mode==='spec128'||mode==='spec32');
+ const mode=viewMode;const isSpec=isSpecView();$('formantBox').hidden=!(mode==='spec128'||mode==='spec32');
  cv.height=(mode==='wave'||mode==='f0'||mode==='loud')?390:(mode.startsWith('sg')?500:420);const H=cv.height;g.font='16px system-ui';g.fillStyle=fg;g.clearRect(0,0,W,H);
  if(mode==='wave'){
-  const x=seg();bars(g,x,W,H,C,.9);otick(g,W,H,x.length/S.sr);const fs=analyzeAt(x,S.sr,x.length/S.sr*500,128).formants||[null,null,null];$('info').textContent='Форма волны. Оценка формант (окно 128 ms в центре фрагмента): '+fs.map((v,i)=>'F'+(i+1)+'='+(v??'—')+' Гц').join(', ')+'.';
+  const x=seg();bars(g,x,W,H,C,.9);otick(g,W,H,x.length/S.sr,selGet()[0]/1000);const fs=analyzeAt(x,S.sr,x.length/S.sr*500,128).formants||[null,null,null];$('info').textContent='Форма волны. Оценка формант (окно 128 ms в центре фрагмента): '+fs.map((v,i)=>'F'+(i+1)+'='+(v??'—')+' Гц').join(', ')+'.';
  }else if(mode==='spec128'||mode==='spec32'){
   const ms=mode==='spec128'?128:32,center=Number($('rc').value);
-  updateFormantMetrics(center);
+  const mm=updateFormantMetrics(center);let warn='';[[mm.a128,128],[mm.a32,32]].forEach(([a,w])=>{if(a.end-a.start<w-.5)warn+=' Окно '+w+' ms сжато до '+(a.end-a.start).toFixed(1)+' ms: '+(anaMode==='frag'?'фрагмент короче окна.':'запись короче окна.')});
   drawSpectrumPanel(g,S.d,S.sr,W,H,center,ms,C);
-  $('info').textContent='Абсолютное время: '+center.toFixed(1)+' ms. На этой точке одновременно рассчитаны окна 128 ms и 32 ms.';
- }else if(mode==='sg128'||mode==='sg32'){
-  const ms=mode==='sg128'?128:32;drawSG(g,S.d,S.sr,8,H-8,ms);$('info').textContent='Вся запись целиком. Длина окна STFT: '+ms+' ms.';
+  $('info').textContent='Абсолютное время: '+center.toFixed(1)+' ms. Режим: '+(anaMode==='frag'?'фрагмент':'вся запись')+'. Окна 128 и 32 ms рассчитаны в одной точке. Потолок поиска F1–F3: 5500 Гц.'+warn;
+ }else if(mode.startsWith('sg')){
+  const ms=+mode.slice(2);drawSG(g,S.d,S.sr,8,H-8,ms);$('info').textContent='Вся запись целиком. Окно STFT: '+ms+' ms. Линии: границы выделения и точка анализа.';
  }else if(mode==='f0'){
-  const p=pitch(S.d,S.sr).map(v=>v!=null&&(v<50||v>550)?null:v);plot(g,W,H,p,50,550,C,2.5,1);g.fillStyle=fg;g.fillText('F0 (основной тон), Гц',8,20);g.fillText('550',4,42);g.fillText('50',4,H-30);otick(g,W,H,S.d.length/S.sr);$('info').textContent='F0 рассчитывается по всему WAV с адаптивным окном до 2048 отсчётов. Тихие и невокализованные кадры скрыты.';
+  const x0=anaSeg(),xa=x0.length?Math.min(2048,x0.length)/2/x0.length:0,p=pitch(x0,S.sr).map(v=>v!=null&&(v<50||v>550)?null:v);plot(g,W,H,p,50,550,C,2.5,1,xa,1-xa);g.fillStyle=fg;g.fillText('F0 (основной тон), Гц',8,20);g.fillText('550',4,42);g.fillText('50',4,H-30);otick(g,W,H,x0.length/S.sr,anaT0());$('info').textContent='F0 по '+(anaMode==='frag'?'выделенному фрагменту':'всей записи')+', окно до 2048 отсчётов; тихие и невокализованные кадры скрыты. Ось: мс от начала WAV.';
  }else{
-  const x=seg(),l=loud(x);plot(g,W,H,l,-50,0,C,3,1); if(!l.length){g.fillStyle=fg;g.fillText('Недостаточно данных для графика громкости.',8,48);}g.fillStyle=fg;g.fillText('Громкость, дБ (относительная)',8,20);otick(g,W,H,x.length/S.sr);$('info').textContent='Относительный уровень, не дБ SPL.';
+  const x=anaSeg(),l=loud(x);plot(g,W,H,l,-50,0,C,3,1); if(!l.length){g.fillStyle=fg;g.fillText('Недостаточно данных для графика громкости.',8,48);}g.fillStyle=fg;g.fillText('Громкость, дБ (относительная)',8,20);otick(g,W,H,x.length/S.sr,anaT0());$('info').textContent='Относительный уровень, не дБ SPL ('+(anaMode==='frag'?'фрагмент':'вся запись')+'). Ось: мс от начала WAV.';
  }
 }
 function redraw(){
  clearTimeout(drawTimer);
  drawTimer=setTimeout(()=>{if(S){drawWave();draw()}},30);
 }
-['ra','rb'].forEach(id=>$(id).oninput=redraw);
+$('ra').oninput=()=>{setSel(+$('ra').value,+$('rb').value,'a');redraw()};
+$('rb').oninput=()=>{setSel(+$('ra').value,+$('rb').value,'b');redraw()};
+const numv=id=>parseFloat(String($(id).value).replace(',','.'));
+$('raNum').onchange=()=>{setSel(numv('raNum'),+$('rb').value,'a');drawWave();draw()};
+$('rbNum').onchange=()=>{setSel(+$('ra').value,numv('rbNum'),'b');drawWave();draw()};
 
 /* ---------------- references ---------------- */
 
@@ -688,7 +746,7 @@ $('ck').onclick=meter;
 /* ---------------- initialization ---------------- */
 
 if(AC&&!AC.prototype.setSinkId){$('lo').hidden=true;$('no').hidden=false}
-$('sp').hidden=false;ui();updateRangeScale();
+$('sp').hidden=false;ui();updateRangeScale();updateFr();
 if(navigator.mediaDevices)navigator.mediaDevices.ondevicechange=devs;
 devs();
 </script>
